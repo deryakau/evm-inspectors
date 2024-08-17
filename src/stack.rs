@@ -7,33 +7,26 @@ use revm::{
 };
 use std::fmt::Debug;
 
-/// One can hook on inspector execution in 3 ways:
-/// - Block: Hook on block execution
-/// - BlockWithIndex: Hook on block execution transaction index
-/// - Transaction: Hook on a specific transaction hash
+/// Enum representing different hooks for inspecting blockchain transactions.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Hook {
     #[default]
     /// No hook.
     None,
-    /// Hook on a specific block.
+    /// Hook on a specific block number.
     Block(u64),
     /// Hook on a specific transaction hash.
     Transaction(B256),
-    /// Hooks on every transaction in a block.
+    /// Hook on every transaction in a block.
     All,
 }
 
-/// An inspector that calls multiple inspectors in sequence.
-///
-/// If a call to an inspector returns a value other than
-/// [revm::interpreter::InstructionResult::Continue] (or equivalent) the remaining inspectors are
-/// not called.
+/// An inspector that manages a stack of multiple inspectors and executes them in sequence.
 #[derive(Clone, Default)]
 pub struct InspectorStack {
-    /// An inspector that prints the opcode traces to the console.
+    /// An optional inspector that prints opcode traces to the console.
     pub custom_print_tracer: Option<CustomPrintTracer>,
-    /// The provided hook
+    /// The hook configuration for the inspector stack.
     pub hook: Hook,
 }
 
@@ -47,9 +40,12 @@ impl Debug for InspectorStack {
 }
 
 impl InspectorStack {
-    /// Create a new inspector stack.
+    /// Creates a new `InspectorStack` instance based on the provided configuration.
     pub fn new(config: InspectorStackConfig) -> Self {
-        let mut stack = Self { hook: config.hook, ..Default::default() };
+        let mut stack = Self {
+            hook: config.hook,
+            ..Default::default()
+        };
 
         if config.use_printer_tracer {
             stack.custom_print_tracer = Some(CustomPrintTracer::default());
@@ -58,7 +54,7 @@ impl InspectorStack {
         stack
     }
 
-    /// Check if the inspector should be used.
+    /// Determines if the inspector should be used based on the environment and transaction hash.
     pub fn should_inspect(&self, env: &Env, tx_hash: B256) -> bool {
         match self.hook {
             Hook::None => false,
@@ -69,26 +65,26 @@ impl InspectorStack {
     }
 }
 
-/// Configuration for the inspectors.
+/// Configuration struct for the `InspectorStack`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct InspectorStackConfig {
-    /// Enable revm inspector printer.
-    /// In execution this will print opcode level traces directly to console.
+    /// Enables the opcode trace printer in the inspector.
     pub use_printer_tracer: bool,
 
-    /// Hook on a specific block or transaction.
+    /// Hook configuration for the inspector stack.
     pub hook: Hook,
 }
 
-/// Helper macro to call the same method on multiple inspectors without resorting to dynamic
-/// dispatch.
+/// Macro for calling a method on multiple inspectors without dynamic dispatch.
 #[macro_export]
 macro_rules! call_inspectors {
-    ([$($inspector:expr),+ $(,)?], |$id:ident $(,)?| $call:expr $(,)?) => {{$(
-        if let Some($id) = $inspector {
-            $call
-        }
-    )+}}
+    ([$($inspector:expr),+ $(,)?], |$id:ident $(,)?| $call:expr $(,)?) => {
+        $(
+            if let Some($id) = $inspector {
+                $call
+            }
+        )+
+    };
 }
 
 impl<DB> Inspector<DB> for InspectorStack
@@ -125,12 +121,8 @@ where
         inputs: &mut CallInputs,
     ) -> Option<CallOutcome> {
         call_inspectors!([&mut self.custom_print_tracer], |inspector| {
-            if let Some(outcome) = inspector.call(context, inputs) {
-                return Some(outcome);
-            }
-        });
-
-        None
+            inspector.call(context, inputs)
+        }).flatten()
     }
 
     fn call_end(
@@ -142,8 +134,8 @@ where
         call_inspectors!([&mut self.custom_print_tracer], |inspector| {
             let new_ret = inspector.call_end(context, inputs, outcome.clone());
 
-            // If the inspector returns a different ret or a revert with a non-empty message,
-            // we assume it wants to tell us something
+            // If the inspector returns a different result or a revert with a non-empty message,
+            // we assume it wants to provide additional information.
             if new_ret != outcome {
                 return new_ret;
             }
@@ -158,12 +150,8 @@ where
         inputs: &mut CreateInputs,
     ) -> Option<CreateOutcome> {
         call_inspectors!([&mut self.custom_print_tracer], |inspector| {
-            if let Some(out) = inspector.create(context, inputs) {
-                return Some(out);
-            }
-        });
-
-        None
+            inspector.create(context, inputs)
+        }).flatten()
     }
 
     fn create_end(
@@ -175,8 +163,8 @@ where
         call_inspectors!([&mut self.custom_print_tracer], |inspector| {
             let new_ret = inspector.create_end(context, inputs, outcome.clone());
 
-            // If the inspector returns a different ret or a revert with a non-empty message,
-            // we assume it wants to tell us something
+            // If the inspector returns a different result or a revert with a non-empty message,
+            // we assume it wants to provide additional information.
             if new_ret != outcome {
                 return new_ret;
             }
@@ -187,7 +175,7 @@ where
 
     fn selfdestruct(&mut self, contract: Address, target: Address, value: U256) {
         call_inspectors!([&mut self.custom_print_tracer], |inspector| {
-            Inspector::<DB>::selfdestruct(inspector, contract, target, value);
+            inspector.selfdestruct(contract, target, value);
         });
     }
 }
